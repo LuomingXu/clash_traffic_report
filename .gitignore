@@ -1,0 +1,8 @@
+.venv
+.trae
+*.log
+__pycache__/
+target
+index.html
+*.db
+*.db-journal

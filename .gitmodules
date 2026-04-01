@@ -1,0 +1,3 @@
+[submodule "tauri-plugin-mihomo"]
+	path = tauri-plugin-mihomo
+	url = https://github.com/clash-verge-rev/tauri-plugin-mihomo.git

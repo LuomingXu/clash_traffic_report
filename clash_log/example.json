@@ -1,0 +1,89 @@
+{
+    "downloadTotal": 1626369736,
+    "uploadTotal": 42165591,
+    "connections": [
+        {
+            "id": "42db1c62-9064-4092-a57b-99d02e097943",
+            "metadata": {
+                "network": "tcp",
+                "type": "Tun",
+                "sourceIP": "198.18.0.1",
+                "destinationIP": "23.46.230.118",
+                "sourceGeoIP": null,
+                "destinationGeoIP": null,
+                "sourceIPASN": "",
+                "destinationIPASN": "",
+                "sourcePort": "61310",
+                "destinationPort": "443",
+                "inboundIP": "198.18.0.1",
+                "inboundPort": "51357",
+                "inboundName": "DEFAULT-TUN",
+                "inboundUser": "",
+                "host": "lorenzopirro.gallerycdn.vsassets.io",
+                "dnsMode": "fake-ip",
+                "uid": 0,
+                "process": "Code.exe",
+                "processPath": "C:\\Program Files\\Microsoft VS Code\\Code.exe",
+                "specialProxy": "",
+                "specialRules": "",
+                "remoteDestination": "184.24.77.58",
+                "dscp": 0,
+                "sniffHost": ""
+            },
+            "upload": 2704,
+            "download": 765223,
+            "start": "2026-03-28T21:51:47.2356632+08:00",
+            "chains": [
+                "DIRECT",
+                "Microsoft"
+            ],
+            "providerChains": [
+                "",
+                ""
+            ],
+            "rule": "RuleSet",
+            "rulePayload": "Microsoft"
+        },
+        {
+            "id": "beb324d6-dd26-4961-8615-1343b6fb038d",
+            "metadata": {
+                "network": "tcp",
+                "type": "Tun",
+                "sourceIP": "198.18.0.1",
+                "destinationIP": "",
+                "sourceGeoIP": null,
+                "destinationGeoIP": null,
+                "sourceIPASN": "",
+                "destinationIPASN": "",
+                "sourcePort": "51115",
+                "destinationPort": "443",
+                "inboundIP": "198.18.0.1",
+                "inboundPort": "51357",
+                "inboundName": "DEFAULT-TUN",
+                "inboundUser": "",
+                "host": "bytegate-sg.byteintlapi.com",
+                "dnsMode": "fake-ip",
+                "uid": 0,
+                "process": "Trae CN.exe",
+                "processPath": "C:\\Users\\AppData\\Local\\Programs\\Trae CN\\Trae CN.exe",
+                "specialProxy": "",
+                "specialRules": "",
+                "remoteDestination": "23.36.163.21",
+                "dscp": 0,
+                "sniffHost": ""
+            },
+            "upload": 1006,
+            "download": 6343,
+            "start": "2026-03-28T21:59:19.4094252+08:00",
+            "chains": [
+                "DIRECT"
+            ],
+            "providerChains": [
+                ""
+            ],
+            "rule": "ProcessName",
+            "rulePayload": "Trae CN.exe"
+        }
+    ],
+    "memory": 115986432
+}

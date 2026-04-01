@@ -1,0 +1,17 @@
+[clash]
+# Pipe 路径配置
+# Windows: \\.\pipe\verge-mihomo
+# Unix: /tmp/verge-mihomo.sock
+socket_path = "\\\\.\\pipe\\verge-mihomo"
+
+[database]
+path = "./connections.db"
+
+# 没用到的配置
+[monitor]
+# 统计间隔（秒）
+statistics_interval_secs = 60
+# 重连间隔（秒）
+reconnect_interval_secs = 5
+# 最大重连次数
+max_reconnect_attempts = 10

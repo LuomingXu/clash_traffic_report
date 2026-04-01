@@ -1,0 +1,15 @@
+[project]
+name = "clash-log-report"
+version = "0.1.0"
+description = "Clash connection log report generator"
+requires-python = ">=3.10"
+dependencies = [
+    "jinja2>=3.1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

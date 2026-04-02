@@ -10,6 +10,27 @@ dependencies = [
 [tool.hatch.build.targets.wheel]
 packages = ["."]
 
+[tool.ruff]
+# 这里只保留全局设置，比如行长、目标版本
+line-length = 88
+target-version = "py313"
+
+[tool.ruff.lint]
+# 所有的规则选择都挪到这个 [lint] 区域
+select = ["E", "F", "I"]
+fixable = ["ALL"]
+unfixable = []
+
+[tool.ruff.lint.isort]
+# 针对排序的具体设置
+section-order = [
+    "future",
+    "standard-library",
+    "third-party",
+    "first-party",
+    "local-folder",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

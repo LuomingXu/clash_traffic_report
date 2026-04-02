@@ -1,8 +1,9 @@
-import sqlite3
 import json
-from datetime import datetime
-from pathlib import Path
+import sqlite3
 from collections import defaultdict
+from datetime import datetime, timedelta
+from pathlib import Path
+
 from jinja2 import Template
 
 DB_PATH = Path(__file__).parent.parent / "clash_log" / "connections.db"
@@ -44,6 +45,29 @@ HTML_TEMPLATE = """
             text-align: center;
             color: #888;
             margin-bottom: 30px;
+        }
+        .time-range-tabs {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 30px;
+        }
+        .time-tab {
+            padding: 10px 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            color: #888;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .time-tab:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+        .time-tab.active {
+            background: rgba(0, 217, 255, 0.2);
+            border-color: #00d9ff;
+            color: #00d9ff;
         }
         .overview-cards {
             display: grid;
@@ -91,38 +115,6 @@ HTML_TEMPLATE = """
             position: relative;
             height: 600px;
         }
-        .table-container {
-            overflow-x: auto;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        th, td {
-            padding: 12px 15px;
-            text-align: left;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        }
-        th {
-            background: rgba(0, 217, 255, 0.1);
-            color: #00d9ff;
-            font-weight: 600;
-        }
-        tr:hover {
-            background: rgba(255, 255, 255, 0.05);
-        }
-        .badge {
-            display: inline-block;
-            padding: 4px 10px;
-            border-radius: 12px;
-            font-size: 0.8em;
-            background: rgba(0, 217, 255, 0.2);
-            color: #00d9ff;
-        }
-        .chains-badge {
-            background: rgba(255, 107, 107, 0.2);
-            color: #ff6b6b;
-        }
         .two-charts {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -133,6 +125,33 @@ HTML_TEMPLATE = """
                 grid-template-columns: 1fr;
             }
         }
+        .legend {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 4px;
+        }
+        .direct-download { background-color: #58D68D; }
+        .direct-upload { background-color: #1E8449; }
+        .proxy-download { background-color: #EC7063; }
+        .proxy-upload { background-color: #943126; }
+        .time-range-content {
+            display: none;
+        }
+        .time-range-content.active {
+            display: block;
+        }
     </style>
 </head>
 <body>
@@ -140,130 +159,89 @@ HTML_TEMPLATE = """
         <h1>Clash Connection Report</h1>
         <p class="report-time">Report generated at: {{ generated_at }}</p>
         
-        <div class="overview-cards">
-            <div class="card">
-                <div class="card-value">{{ overview.total_connections }}</div>
-                <div class="card-label">Total Connections</div>
+        <div class="time-range-tabs">
+            <button class="time-tab active" data-range="8h">8h</button>
+            <button class="time-tab" data-range="24h">24h</button>
+            <button class="time-tab" data-range="1D">1D</button>
+            <button class="time-tab" data-range="1M">1M</button>
+            <button class="time-tab" data-range="All">All</button>
+        </div>
+
+        <div class="legend">
+            <div class="legend-item">
+                <div class="legend-color direct-download"></div>
+                <span>直连下载 (DL)</span>
             </div>
-            <div class="card">
-                <div class="card-value">{{ overview.total_upload }}</div>
-                <div class="card-label">Total Upload</div>
+            <div class="legend-item">
+                <div class="legend-color direct-upload"></div>
+                <span>直连上传 (UL)</span>
             </div>
-            <div class="card">
-                <div class="card-value">{{ overview.total_download }}</div>
-                <div class="card-label">Total Download</div>
+            <div class="legend-item">
+                <div class="legend-color proxy-download"></div>
+                <span>代理下载 (DL)</span>
             </div>
-            <div class="card">
-                <div class="card-value">{{ overview.unique_hosts }}</div>
-                <div class="card-label">Unique Hosts</div>
-            </div>
-            <div class="card">
-                <div class="card-value">{{ overview.unique_processes }}</div>
-                <div class="card-label">Unique Processes</div>
+            <div class="legend-item">
+                <div class="legend-color proxy-upload"></div>
+                <span>代理上传 (UL)</span>
             </div>
         </div>
 
-        <div class="section">
-            <h2>Host Traffic Ranking (Top 20)</h2>
-            <div class="chart-container">
-                <canvas id="hostChart"></canvas>
-            </div>
-        </div>
-
-        <div class="section">
-            <h2>Host Traffic Ranking By Domain (Top 20)</h2>
-            <div class="chart-container">
-                <canvas id="domainChart"></canvas>
-            </div>
-        </div>
-
-        <div class="two-charts">
-            <div class="section">
-                <h2>Proxy Node Usage</h2>
-                <div class="chart-container">
-                    <canvas id="nodeChart"></canvas>
+        {% for time_range in time_ranges %}
+        <div class="time-range-content {% if time_range == '8h' %}active{% endif %}" id="content-{{ time_range }}">
+            <div class="overview-cards">
+                <div class="card">
+                    <div class="card-value">{{ overview_data[time_range].total_connections }}</div>
+                    <div class="card-label">Total Connections</div>
+                </div>
+                <div class="card">
+                    <div class="card-value">{{ overview_data[time_range].total_upload }}</div>
+                    <div class="card-label">Total Upload</div>
+                </div>
+                <div class="card">
+                    <div class="card-value">{{ overview_data[time_range].total_download }}</div>
+                    <div class="card-label">Total Download</div>
+                </div>
+                <div class="card">
+                    <div class="card-value">{{ overview_data[time_range].unique_hosts }}</div>
+                    <div class="card-label">Unique Hosts</div>
+                </div>
+                <div class="card">
+                    <div class="card-value">{{ overview_data[time_range].unique_processes }}</div>
+                    <div class="card-label">Unique Processes</div>
                 </div>
             </div>
+
             <div class="section">
-                <h2>Process Traffic Statistics</h2>
+                <h2>Host Traffic Ranking By Domain (Top 20)</h2>
                 <div class="chart-container">
-                    <canvas id="processChart"></canvas>
+                    <canvas id="domainChart-{{ time_range }}"></canvas>
+                </div>
+            </div>
+
+            <div class="two-charts">
+                <div class="section">
+                    <h2>Proxy Node Usage</h2>
+                    <div class="chart-container">
+                        <canvas id="nodeChart-{{ time_range }}"></canvas>
+                    </div>
+                </div>
+                <div class="section">
+                    <h2>Process Traffic Statistics</h2>
+                    <div class="chart-container">
+                        <canvas id="processChart-{{ time_range }}"></canvas>
+                    </div>
                 </div>
             </div>
         </div>
-
-        <div class="section">
-            <h2>Daily Traffic Trend</h2>
-            <div class="chart-container">
-                <canvas id="dailyChart"></canvas>
-            </div>
-        </div>
-
-        <div class="section">
-            <h2>Rule Hit Statistics</h2>
-            <div class="table-container">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Rule</th>
-                            <th>Connections</th>
-                            <th>Upload</th>
-                            <th>Download</th>
-                            <th>Total Traffic</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for rule in rule_stats %}
-                        <tr>
-                            <td><span class="badge">{{ rule.rule }}</span></td>
-                            <td>{{ rule.count }}</td>
-                            <td>{{ rule.upload }}</td>
-                            <td>{{ rule.download }}</td>
-                            <td>{{ rule.total }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <div class="section">
-            <h2>Host Details (Top 50)</h2>
-            <div class="table-container">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Host</th>
-                            <th>Connections</th>
-                            <th>Upload</th>
-                            <th>Download</th>
-                            <th>Total Traffic</th>
-                            <th>Proxy Chain</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for host in host_details %}
-                        <tr>
-                            <td>{{ host.host }}</td>
-                            <td>{{ host.count }}</td>
-                            <td>{{ host.upload }}</td>
-                            <td>{{ host.download }}</td>
-                            <td>{{ host.total }}</td>
-                            <td><span class="badge chains-badge">{{ host.chain }}</span></td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
+        {% endfor %}
     </div>
 
     <script>
         const chartColors = {
-            upload: 'rgba(0, 217, 255, 0.8)',
-            download: 'rgba(255, 107, 107, 0.8)',
-            uploadBg: 'rgba(0, 217, 255, 0.2)',
-            downloadBg: 'rgba(255, 107, 107, 0.2)',
+            directDownload: '#58D68D',
+            directUpload: '#1E8449',
+            proxyDownload: '#EC7063',
+            proxyUpload: '#943126',
             grid: 'rgba(255, 255, 255, 0.1)',
             text: '#888'
         };
@@ -279,231 +257,152 @@ HTML_TEMPLATE = """
             return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         }
 
-        // Host Chart
-        new Chart(document.getElementById('hostChart'), {
-            type: 'bar',
-            data: {
-                labels: {{ host_labels | safe }},
-                datasets: [{
-                    label: 'Direct Download',
-                    data: {{ host_direct_download | safe }},
-                    backgroundColor: 'rgba(76, 175, 80, 0.8)',
-                }, {
-                    label: 'Proxy Download',
-                    data: {{ host_proxy_download | safe }},
-                    backgroundColor: 'rgba(255, 107, 107, 0.8)',
-                }, {
-                    label: 'Direct Upload',
-                    data: {{ host_direct_upload | safe }},
-                    backgroundColor: 'rgba(129, 199, 132, 0.8)',
-                }, {
-                    label: 'Proxy Upload',
-                    data: {{ host_proxy_upload | safe }},
-                    backgroundColor: 'rgba(0, 217, 255, 0.8)',
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                indexAxis: 'y',
-                plugins: {
-                    tooltip: {
-                        callbacks: {
-                            label: function(context) {
-                                return context.dataset.label + ': ' + formatBytes(context.raw);
-                            }
-                        }
-                    }
+        const chartData = {{ chart_data | safe }};
+
+        Object.keys(chartData).forEach(timeRange => {
+            const data = chartData[timeRange];
+
+            new Chart(document.getElementById(`domainChart-${timeRange}`), {
+                type: 'bar',
+                data: {
+                    labels: data.domain.labels,
+                    datasets: [{
+                        label: '直连下载 (DL)',
+                        data: data.domain.directDownload,
+                        backgroundColor: chartColors.directDownload,
+                    }, {
+                        label: '直连上传 (UL)',
+                        data: data.domain.directUpload,
+                        backgroundColor: chartColors.directUpload,
+                    }, {
+                        label: '代理下载 (DL)',
+                        data: data.domain.proxyDownload,
+                        backgroundColor: chartColors.proxyDownload,
+                    }, {
+                        label: '代理上传 (UL)',
+                        data: data.domain.proxyUpload,
+                        backgroundColor: chartColors.proxyUpload,
+                    }]
                 },
-                scales: {
-                    x: {
-                        stacked: true,
-                        ticks: {
-                            callback: function(value) {
-                                return formatBytes(value);
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y',
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return context.dataset.label + ': ' + formatBytes(context.raw);
+                                }
                             }
                         }
                     },
-                    y: {
-                        stacked: true,
-                        ticks: {
-                            autoSkip: false
-                        }
-                    }
-                }
-            }
-        });
-
-        // Domain Chart
-        new Chart(document.getElementById('domainChart'), {
-            type: 'bar',
-            data: {
-                labels: {{ domain_labels | safe }},
-                datasets: [{
-                    label: 'Direct Download',
-                    data: {{ domain_direct_download | safe }},
-                    backgroundColor: 'rgba(76, 175, 80, 0.8)',
-                }, {
-                    label: 'Proxy Download',
-                    data: {{ domain_proxy_download | safe }},
-                    backgroundColor: 'rgba(255, 107, 107, 0.8)',
-                }, {
-                    label: 'Direct Upload',
-                    data: {{ domain_direct_upload | safe }},
-                    backgroundColor: 'rgba(129, 199, 132, 0.8)',
-                }, {
-                    label: 'Proxy Upload',
-                    data: {{ domain_proxy_upload | safe }},
-                    backgroundColor: 'rgba(0, 217, 255, 0.8)',
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                indexAxis: 'y',
-                plugins: {
-                    tooltip: {
-                        callbacks: {
-                            label: function(context) {
-                                return context.dataset.label + ': ' + formatBytes(context.raw);
+                    scales: {
+                        x: {
+                            stacked: true,
+                            ticks: {
+                                callback: function(value) {
+                                    return formatBytes(value);
+                                }
+                            }
+                        },
+                        y: {
+                            stacked: true,
+                            ticks: {
+                                autoSkip: false
                             }
                         }
                     }
+                }
+            });
+
+            new Chart(document.getElementById(`nodeChart-${timeRange}`), {
+                type: 'doughnut',
+                data: {
+                    labels: data.node.labels,
+                    datasets: [{
+                        data: data.node.traffic,
+                        backgroundColor: data.node.colors
+                    }]
                 },
-                scales: {
-                    x: {
-                        stacked: true,
-                        ticks: {
-                            callback: function(value) {
-                                return formatBytes(value);
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return context.label + ': ' + formatBytes(context.raw);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            new Chart(document.getElementById(`processChart-${timeRange}`), {
+                type: 'bar',
+                data: {
+                    labels: data.process.labels,
+                    datasets: [{
+                        label: '直连下载 (DL)',
+                        data: data.process.directDownload,
+                        backgroundColor: chartColors.directDownload,
+                    }, {
+                        label: '直连上传 (UL)',
+                        data: data.process.directUpload,
+                        backgroundColor: chartColors.directUpload,
+                    }, {
+                        label: '代理下载 (DL)',
+                        data: data.process.proxyDownload,
+                        backgroundColor: chartColors.proxyDownload,
+                    }, {
+                        label: '代理上传 (UL)',
+                        data: data.process.proxyUpload,
+                        backgroundColor: chartColors.proxyUpload,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return context.dataset.label + ': ' + formatBytes(context.raw);
+                                }
                             }
                         }
                     },
-                    y: {
-                        stacked: true,
-                        ticks: {
-                            autoSkip: false
+                    scales: {
+                        x: {
+                            stacked: true,
+                            ticks: {
+                                callback: function(value) {
+                                    return formatBytes(value);
+                                }
+                            }
+                        },
+                        y: {
+                            stacked: true
                         }
                     }
                 }
-            }
+            });
         });
 
-        // Node Chart
-        new Chart(document.getElementById('nodeChart'), {
-            type: 'doughnut',
-            data: {
-                labels: {{ node_labels | safe }},
-                datasets: [{
-                    data: {{ node_traffic | safe }},
-                    backgroundColor: [
-                        '#00d9ff', '#ff6b6b', '#4ecdc4', '#ffe66d', 
-                        '#95e1d3', '#f38181', '#aa96da', '#fcbad3',
-                        '#a8d8ea', '#ffb6b9', '#fae3d9', '#bbded6'
-                    ]
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    tooltip: {
-                        callbacks: {
-                            label: function(context) {
-                                return context.label + ': ' + formatBytes(context.raw);
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
-        // Process Chart
-        new Chart(document.getElementById('processChart'), {
-            type: 'bar',
-            data: {
-                labels: {{ process_labels | safe }},
-                datasets: [{
-                    label: 'Download',
-                    data: {{ process_download | safe }},
-                    backgroundColor: chartColors.download,
-                }, {
-                    label: 'Upload',
-                    data: {{ process_upload | safe }},
-                    backgroundColor: chartColors.upload,
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    tooltip: {
-                        callbacks: {
-                            label: function(context) {
-                                return context.dataset.label + ': ' + formatBytes(context.raw);
-                            }
-                        }
-                    }
-                },
-                scales: {
-                    x: {
-                        stacked: true,
-                        ticks: {
-                            callback: function(value) {
-                                return formatBytes(value);
-                            }
-                        }
-                    },
-                    y: {
-                        stacked: true
-                    }
-                }
-            }
-        });
-
-        // Daily Chart
-        new Chart(document.getElementById('dailyChart'), {
-            type: 'line',
-            data: {
-                labels: {{ daily_labels | safe }},
-                datasets: [{
-                    label: 'Download',
-                    data: {{ daily_download | safe }},
-                    borderColor: chartColors.download,
-                    backgroundColor: chartColors.downloadBg,
-                    fill: true,
-                    tension: 0.4
-                }, {
-                    label: 'Upload',
-                    data: {{ daily_upload | safe }},
-                    borderColor: chartColors.upload,
-                    backgroundColor: chartColors.uploadBg,
-                    fill: true,
-                    tension: 0.4
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    tooltip: {
-                        callbacks: {
-                            label: function(context) {
-                                return context.dataset.label + ': ' + formatBytes(context.raw);
-                            }
-                        }
-                    }
-                },
-                scales: {
-                    y: {
-                        ticks: {
-                            callback: function(value) {
-                                return formatBytes(value);
-                            }
-                        }
-                    }
-                }
-            }
+        document.querySelectorAll('.time-tab').forEach(tab => {
+            tab.addEventListener('click', function() {
+                const range = this.dataset.range;
+                
+                document.querySelectorAll('.time-tab').forEach(t => t.classList.remove('active'));
+                this.classList.add('active');
+                
+                document.querySelectorAll('.time-range-content').forEach(content => {
+                    content.classList.remove('active');
+                });
+                document.getElementById(`content-${range}`).classList.add('active');
+            });
         });
     </script>
 </body>
@@ -527,54 +426,20 @@ def get_db_connection():
     return sqlite3.connect(str(DB_PATH))
 
 
-def get_overview(conn):
-    total_connections = conn.execute("SELECT COUNT(*) FROM connections").fetchone()[0]
-    
-    upload, download = conn.execute("SELECT COALESCE(SUM(upload), 0), COALESCE(SUM(download), 0) FROM connections").fetchone()
-    
-    unique_hosts = conn.execute("SELECT COUNT(DISTINCT host) FROM connections WHERE host IS NOT NULL AND host != ''").fetchone()[0]
-    
-    unique_processes = conn.execute("SELECT COUNT(DISTINCT process_name) FROM connections WHERE process_name IS NOT NULL AND process_name != ''").fetchone()[0]
-    
-    return {
-        "total_connections": total_connections,
-        "total_upload": format_bytes(upload or 0),
-        "total_download": format_bytes(download or 0),
-        "unique_hosts": unique_hosts,
-        "unique_processes": unique_processes,
-    }
+def get_time_range_condition(time_range: str) -> tuple:
+    now = datetime.now()
+    if time_range == "8h":
+        start_time = now - timedelta(hours=8)
+    elif time_range == "24h":
+        start_time = now - timedelta(hours=24)
+    elif time_range == "1D":
+        start_time = now - timedelta(days=1)
+    elif time_range == "1M":
+        start_time = now - timedelta(days=30)
+    else:
+        return "", []
 
-
-def get_host_stats(conn, limit=20):
-    results = conn.execute("""
-        SELECT 
-            COALESCE(host, destination_ip) as host,
-            chains,
-            SUM(upload) as upload,
-            SUM(download) as download
-        FROM connections
-        GROUP BY host, chains
-        ORDER BY (SUM(upload) + SUM(download)) DESC
-    """).fetchall()
-    
-    host_data = defaultdict(lambda: {"upload": 0, "download": 0, "direct_upload": 0, "direct_download": 0, "proxy_upload": 0, "proxy_download": 0})
-    
-    for row in results:
-        host, chains_json, upload, download = row
-        upload = upload or 0
-        download = download or 0
-        host_data[host]["upload"] += upload
-        host_data[host]["download"] += download
-        
-        if is_direct(chains_json):
-            host_data[host]["direct_upload"] += upload
-            host_data[host]["direct_download"] += download
-        else:
-            host_data[host]["proxy_upload"] += upload
-            host_data[host]["proxy_download"] += download
-    
-    sorted_hosts = sorted(host_data.items(), key=lambda x: x[1]["upload"] + x[1]["download"], reverse=True)[:limit]
-    return sorted_hosts
+    return "AND start_time >= ?", [int(start_time.timestamp())]
 
 
 def is_direct(chains_json: str) -> bool:
@@ -587,83 +452,32 @@ def is_direct(chains_json: str) -> bool:
         return True
 
 
-def get_host_chains(conn, limit=50):
-    return conn.execute("""
-        SELECT 
-            COALESCE(host, destination_ip) as host,
-            COUNT(*) as count,
-            SUM(upload) as upload,
-            SUM(download) as download,
-            chains
-        FROM connections
-        GROUP BY host
-        ORDER BY (SUM(upload) + SUM(download)) DESC
-        LIMIT ?
-    """, [limit]).fetchall()
-
-
 def extract_domain(host: str) -> str:
     if not host:
         return "Unknown"
+
     parts = host.split(".")
+
+    if len(parts) == 4:
+        is_ip = True
+        for part in parts:
+            if not part.isdigit():
+                is_ip = False
+                break
+            num = int(part)
+            if num < 0 or num > 255:
+                is_ip = False
+                break
+
+        if is_ip:
+            return host
+
+    if ":" in host:
+        return host
+
     if len(parts) >= 2:
         return ".".join(parts[-2:])
     return host
-
-
-def get_domain_stats(conn, limit=20):
-    results = conn.execute("""
-        SELECT 
-            COALESCE(host, destination_ip) as host,
-            chains,
-            SUM(upload) as upload,
-            SUM(download) as download
-        FROM connections
-        GROUP BY host, chains
-    """).fetchall()
-    
-    domain_data = defaultdict(lambda: {"upload": 0, "download": 0, "direct_upload": 0, "direct_download": 0, "proxy_upload": 0, "proxy_download": 0})
-    
-    for row in results:
-        host, chains_json, upload, download = row
-        upload = upload or 0
-        download = download or 0
-        domain = extract_domain(host)
-        
-        domain_data[domain]["upload"] += upload
-        domain_data[domain]["download"] += download
-        
-        if is_direct(chains_json):
-            domain_data[domain]["direct_upload"] += upload
-            domain_data[domain]["direct_download"] += download
-        else:
-            domain_data[domain]["proxy_upload"] += upload
-            domain_data[domain]["proxy_download"] += download
-    
-    sorted_domains = sorted(domain_data.items(), key=lambda x: x[1]["upload"] + x[1]["download"], reverse=True)[:limit]
-    return sorted_domains
-
-
-def get_node_stats(conn):
-    results = conn.execute("""
-        SELECT 
-            chains,
-            COUNT(*) as count,
-            SUM(upload) + SUM(download) as traffic
-        FROM connections
-        GROUP BY chains
-        ORDER BY traffic DESC
-    """).fetchall()
-    
-    node_data = defaultdict(lambda: {"count": 0, "traffic": 0})
-    for row in results:
-        chains_json, count, traffic = row
-        node_name = parse_chains_first(chains_json)
-        node_data[node_name]["count"] += count
-        node_data[node_name]["traffic"] += traffic or 0
-    
-    sorted_nodes = sorted(node_data.items(), key=lambda x: x[1]["traffic"], reverse=True)
-    return [(name, data["count"], data["traffic"]) for name, data in sorted_nodes]
 
 
 def parse_chains_first(chains_json: str) -> str:
@@ -676,148 +490,243 @@ def parse_chains_first(chains_json: str) -> str:
         return "DIRECT"
 
 
-def get_process_stats(conn, limit=15):
-    return conn.execute("""
+def get_overview(conn, time_range: str):
+    time_condition, time_params = get_time_range_condition(time_range)
+
+    query = f"SELECT COUNT(*) FROM connections WHERE 1=1 {time_condition}"
+    total_connections = conn.execute(query, time_params).fetchone()[0]
+
+    query = f"SELECT COALESCE(SUM(upload), 0), COALESCE(SUM(download), 0) FROM connections WHERE 1=1 {time_condition}"
+    upload, download = conn.execute(query, time_params).fetchone()
+
+    query = f"SELECT COUNT(DISTINCT host) FROM connections WHERE host IS NOT NULL AND host != '' {time_condition}"
+    unique_hosts = conn.execute(query, time_params).fetchone()[0]
+
+    query = f"SELECT COUNT(DISTINCT process_name) FROM connections WHERE process_name IS NOT NULL AND process_name != '' {time_condition}"
+    unique_processes = conn.execute(query, time_params).fetchone()[0]
+
+    return {
+        "total_connections": total_connections,
+        "total_upload": format_bytes(upload or 0),
+        "total_download": format_bytes(download or 0),
+        "unique_hosts": unique_hosts,
+        "unique_processes": unique_processes,
+    }
+
+
+def get_domain_stats(conn, time_range: str, limit=20):
+    time_condition, time_params = get_time_range_condition(time_range)
+
+    query = f"""
+        SELECT 
+            CASE 
+                WHEN host IS NOT NULL AND host != '' THEN host
+                WHEN destination_ip IS NOT NULL AND destination_ip != '' THEN destination_ip
+                ELSE NULL
+            END as host,
+            chains,
+            SUM(upload) as upload,
+            SUM(download) as download
+        FROM connections
+        WHERE 1=1 {time_condition}
+        GROUP BY host, chains
+    """
+    results = conn.execute(query, time_params).fetchall()
+
+    domain_data = defaultdict(
+        lambda: {
+            "upload": 0,
+            "download": 0,
+            "direct_upload": 0,
+            "direct_download": 0,
+            "proxy_upload": 0,
+            "proxy_download": 0,
+        }
+    )
+
+    for row in results:
+        host, chains_json, upload, download = row
+        upload = upload or 0
+        download = download or 0
+        domain = extract_domain(host)
+
+        domain_data[domain]["upload"] += upload
+        domain_data[domain]["download"] += download
+
+        if is_direct(chains_json):
+            domain_data[domain]["direct_upload"] += upload
+            domain_data[domain]["direct_download"] += download
+        else:
+            domain_data[domain]["proxy_upload"] += upload
+            domain_data[domain]["proxy_download"] += download
+
+    sorted_domains = sorted(
+        domain_data.items(),
+        key=lambda x: x[1]["upload"] + x[1]["download"],
+        reverse=True,
+    )[:limit]
+
+    return {
+        "labels": [domain or "Unknown" for domain, data in sorted_domains],
+        "directDownload": [data["direct_download"] for domain, data in sorted_domains],
+        "proxyDownload": [data["proxy_download"] for domain, data in sorted_domains],
+        "directUpload": [data["direct_upload"] for domain, data in sorted_domains],
+        "proxyUpload": [data["proxy_upload"] for domain, data in sorted_domains],
+    }
+
+
+def get_node_stats(conn, time_range: str):
+    time_condition, time_params = get_time_range_condition(time_range)
+
+    query = f"""
+        SELECT 
+            chains,
+            COUNT(*) as count,
+            SUM(upload) + SUM(download) as traffic
+        FROM connections
+        WHERE 1=1 {time_condition}
+        GROUP BY chains
+        ORDER BY traffic DESC
+    """
+    results = conn.execute(query, time_params).fetchall()
+
+    node_data = defaultdict(lambda: {"count": 0, "traffic": 0})
+    for row in results:
+        chains_json, count, traffic = row
+        node_name = parse_chains_first(chains_json)
+        node_data[node_name]["count"] += count
+        node_data[node_name]["traffic"] += traffic or 0
+
+    sorted_nodes = sorted(
+        node_data.items(), key=lambda x: x[1]["traffic"], reverse=True
+    )
+
+    red_colors = [
+        "#EC7063",
+        "#E74C3C",
+        "#C0392B",
+        "#FF6B6B",
+        "#F38181",
+        "#FCBAD3",
+        "#FFB6B9",
+        "#E57373",
+        "#EF5350",
+        "#F44336",
+        "#D32F2F",
+        "#C62828",
+    ]
+
+    colors = []
+    red_index = 0
+    for name, data in sorted_nodes:
+        if name.upper() == "DIRECT":
+            colors.append("#58D68D")
+        else:
+            colors.append(red_colors[red_index % len(red_colors)])
+            red_index += 1
+
+    return {
+        "labels": [name for name, data in sorted_nodes],
+        "traffic": [data["traffic"] for name, data in sorted_nodes],
+        "colors": colors,
+    }
+
+
+def get_process_stats(conn, time_range: str, limit=15):
+    time_condition, time_params = get_time_range_condition(time_range)
+
+    query = f"""
         SELECT 
             COALESCE(process_name, 'Unknown') as process,
-            COUNT(*) as count,
+            chains,
             SUM(upload) as upload,
             SUM(download) as download
         FROM connections
-        GROUP BY process_name
-        ORDER BY (SUM(upload) + SUM(download)) DESC
-        LIMIT ?
-    """, [limit]).fetchall()
+        WHERE 1=1 {time_condition}
+        GROUP BY process_name, chains
+    """
+    results = conn.execute(query, time_params).fetchall()
 
+    process_data = defaultdict(
+        lambda: {
+            "upload": 0,
+            "download": 0,
+            "direct_upload": 0,
+            "direct_download": 0,
+            "proxy_upload": 0,
+            "proxy_download": 0,
+        }
+    )
 
-def get_daily_stats(conn):
-    return conn.execute("""
-        SELECT 
-            date(start_time, 'unixepoch') as date,
-            COUNT(*) as count,
-            SUM(upload) as upload,
-            SUM(download) as download
-        FROM connections
-        GROUP BY date
-        ORDER BY date ASC
-    """).fetchall()
+    for row in results:
+        process, chains_json, upload, download = row
+        upload = upload or 0
+        download = download or 0
 
+        process_data[process]["upload"] += upload
+        process_data[process]["download"] += download
 
-def get_rule_stats(conn):
-    return conn.execute("""
-        SELECT 
-            COALESCE(rule, 'Unknown') as rule,
-            COUNT(*) as count,
-            SUM(upload) as upload,
-            SUM(download) as download
-        FROM connections
-        GROUP BY rule
-        ORDER BY (SUM(upload) + SUM(download)) DESC
-    """).fetchall()
+        if is_direct(chains_json):
+            process_data[process]["direct_upload"] += upload
+            process_data[process]["direct_download"] += download
+        else:
+            process_data[process]["proxy_upload"] += upload
+            process_data[process]["proxy_download"] += download
 
+    sorted_processes = sorted(
+        process_data.items(),
+        key=lambda x: x[1]["upload"] + x[1]["download"],
+        reverse=True,
+    )[:limit]
 
-def parse_chains(chains_json: str) -> str:
-    try:
-        chains = json.loads(chains_json)
-        if isinstance(chains, list) and len(chains) > 0:
-            return chains[0] if len(chains) == 1 else f"{chains[0]} (+{len(chains)-1})"
-        return "Direct"
-    except (json.JSONDecodeError, TypeError):
-        return "Direct"
+    return {
+        "labels": [
+            process[:20] + "..." if len(process or "") > 20 else (process or "Unknown")
+            for process, data in sorted_processes
+        ],
+        "directDownload": [
+            data["direct_download"] for process, data in sorted_processes
+        ],
+        "proxyDownload": [data["proxy_download"] for process, data in sorted_processes],
+        "directUpload": [data["direct_upload"] for process, data in sorted_processes],
+        "proxyUpload": [data["proxy_upload"] for process, data in sorted_processes],
+    }
 
 
 def generate_report():
     if not DB_PATH.exists():
         print(f"Database not found: {DB_PATH}")
         return
-    
+
     conn = get_db_connection()
-    
+
     try:
-        overview = get_overview(conn)
-        
-        host_stats = get_host_stats(conn, 20)
-        host_labels = [host or "Unknown" for host, data in host_stats]
-        host_direct_download = [data["direct_download"] for host, data in host_stats]
-        host_proxy_download = [data["proxy_download"] for host, data in host_stats]
-        host_direct_upload = [data["direct_upload"] for host, data in host_stats]
-        host_proxy_upload = [data["proxy_upload"] for host, data in host_stats]
-        
-        domain_stats = get_domain_stats(conn, 20)
-        domain_labels = [domain or "Unknown" for domain, data in domain_stats]
-        domain_direct_download = [data["direct_download"] for domain, data in domain_stats]
-        domain_proxy_download = [data["proxy_download"] for domain, data in domain_stats]
-        domain_direct_upload = [data["direct_upload"] for domain, data in domain_stats]
-        domain_proxy_upload = [data["proxy_upload"] for domain, data in domain_stats]
-        
-        host_details_raw = get_host_chains(conn, 50)
-        host_details = []
-        for row in host_details_raw:
-            host_details.append({
-                "host": row[0] or "Unknown",
-                "count": row[1],
-                "upload": format_bytes(row[2] or 0),
-                "download": format_bytes(row[3] or 0),
-                "total": format_bytes((row[2] or 0) + (row[3] or 0)),
-                "chain": parse_chains(row[4]),
-            })
-        
-        node_stats = get_node_stats(conn)
-        node_labels = [row[0] for row in node_stats]
-        node_traffic = [row[2] or 0 for row in node_stats]
-        
-        process_stats = get_process_stats(conn, 15)
-        process_labels = [row[0][:20] + "..." if len(row[0] or "") > 20 else (row[0] or "Unknown") for row in process_stats]
-        process_upload = [row[2] or 0 for row in process_stats]
-        process_download = [row[3] or 0 for row in process_stats]
-        
-        daily_stats = get_daily_stats(conn)
-        daily_labels = [row[0] for row in daily_stats]
-        daily_upload = [row[2] or 0 for row in daily_stats]
-        daily_download = [row[3] or 0 for row in daily_stats]
-        
-        rule_stats_raw = get_rule_stats(conn)
-        rule_stats = []
-        for row in rule_stats_raw:
-            rule_stats.append({
-                "rule": row[0] or "Unknown",
-                "count": row[1],
-                "upload": format_bytes(row[2] or 0),
-                "download": format_bytes(row[3] or 0),
-                "total": format_bytes((row[2] or 0) + (row[3] or 0)),
-            })
-        
+        time_ranges = ["8h", "24h", "1D", "1M", "All"]
+        overview_data = {}
+        chart_data = {}
+
+        for time_range in time_ranges:
+            overview_data[time_range] = get_overview(conn, time_range)
+
+            chart_data[time_range] = {
+                "domain": get_domain_stats(conn, time_range, 20),
+                "node": get_node_stats(conn, time_range),
+                "process": get_process_stats(conn, time_range, 15),
+            }
+
         template = Template(HTML_TEMPLATE)
         html = template.render(
             generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            overview=overview,
-            host_labels=json.dumps(host_labels),
-            host_direct_download=json.dumps(host_direct_download),
-            host_proxy_download=json.dumps(host_proxy_download),
-            host_direct_upload=json.dumps(host_direct_upload),
-            host_proxy_upload=json.dumps(host_proxy_upload),
-            domain_labels=json.dumps(domain_labels),
-            domain_direct_download=json.dumps(domain_direct_download),
-            domain_proxy_download=json.dumps(domain_proxy_download),
-            domain_direct_upload=json.dumps(domain_direct_upload),
-            domain_proxy_upload=json.dumps(domain_proxy_upload),
-            host_details=host_details,
-            node_labels=json.dumps(node_labels),
-            node_traffic=json.dumps(node_traffic),
-            process_labels=json.dumps(process_labels),
-            process_upload=json.dumps(process_upload),
-            process_download=json.dumps(process_download),
-            daily_labels=json.dumps(daily_labels),
-            daily_upload=json.dumps(daily_upload),
-            daily_download=json.dumps(daily_download),
-            rule_stats=rule_stats,
+            time_ranges=time_ranges,
+            overview_data=overview_data,
+            chart_data=json.dumps(chart_data),
         )
-        
+
         with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
             f.write(html)
-        
+
         print(f"Report generated: {OUTPUT_PATH}")
-        
+
     finally:
         conn.close()
 

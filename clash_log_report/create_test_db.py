@@ -1,17 +1,18 @@
-import sqlite3
 import json
-from datetime import datetime, timedelta
-import random
 import os
+import random
+import sqlite3
+from datetime import datetime, timedelta
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "clash_log", "connections.db")
 
+
 def create_test_database():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    
+
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS connections (
             id TEXT PRIMARY KEY,
@@ -49,41 +50,70 @@ def create_test_database():
             updated_at INTEGER NOT NULL
         )
     """)
-    
+
     hosts = [
-        "google.com", "youtube.com", "github.com", "stackoverflow.com",
-        "reddit.com", "twitter.com", "facebook.com", "instagram.com",
-        "amazon.com", "netflix.com", "spotify.com", "discord.com",
-        "slack.com", "zoom.us", "teams.microsoft.com", "cloudflare.com"
+        "google.com",
+        "youtube.com",
+        "github.com",
+        "stackoverflow.com",
+        "reddit.com",
+        "twitter.com",
+        "facebook.com",
+        "instagram.com",
+        "amazon.com",
+        "netflix.com",
+        "spotify.com",
+        "discord.com",
+        "slack.com",
+        "zoom.us",
+        "teams.microsoft.com",
+        "cloudflare.com",
     ]
-    
+
     processes = [
-        "chrome.exe", "firefox.exe", "code.exe", "discord.exe",
-        "spotify.exe", "slack.exe", "zoom.exe", "msedge.exe"
+        "chrome.exe",
+        "firefox.exe",
+        "code.exe",
+        "discord.exe",
+        "spotify.exe",
+        "slack.exe",
+        "zoom.exe",
+        "msedge.exe",
     ]
-    
+
     chains = [
-        '["HongKong-01"]', '["Japan-02"]', '["US-03"]', '["Singapore-04"]',
-        '["Taiwan-05"]', '["Korea-06"]', '["Germany-07"]', '["UK-08"]'
+        '["HongKong-01"]',
+        '["Japan-02"]',
+        '["US-03"]',
+        '["Singapore-04"]',
+        '["Taiwan-05"]',
+        '["Korea-06"]',
+        '["Germany-07"]',
+        '["UK-08"]',
     ]
-    
+
     rules = ["DOMAIN-SUFFIX", "IP-CIDR", "GEOIP", "MATCH", "DOMAIN-KEYWORD"]
-    
+
     now = datetime.now()
-    
+
     for i in range(500):
-        start_time = int((now - timedelta(days=random.randint(0, 7), hours=random.randint(0, 23))).timestamp())
+        start_time = int(
+            (
+                now - timedelta(days=random.randint(0, 7), hours=random.randint(0, 23))
+            ).timestamp()
+        )
         end_time = start_time + random.randint(10, 3600)
-        
+
         host = random.choice(hosts)
         process = random.choice(processes)
         chain = random.choice(chains)
         rule = random.choice(rules)
-        
+
         upload = random.randint(1000, 100000000)
         download = random.randint(10000, 500000000)
-        
-        cursor.execute("""
+
+        cursor.execute(
+            """
             INSERT OR REPLACE INTO connections (
                 id, start_time, end_time, duration,
                 network, connection_type,
@@ -93,32 +123,35 @@ def create_test_database():
                 upload, download, process, process_path,
                 created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            f"conn-{i:04d}",
-            start_time,
-            end_time,
-            end_time - start_time,
-            random.choice(["TCP", "UDP"]),
-            random.choice(["HTTP", "HTTPConnect", "SOCKS5", "Tun"]),
-            "192.168.1.100",
-            str(random.randint(40000, 60000)),
-            f"203.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}",
-            "443",
-            host,
-            chain,
-            rule,
-            host,
-            upload,
-            download,
-            process,
-            f"C:/Program Files/{process}",
-            start_time,
-            end_time
-        ))
-    
+        """,
+            (
+                f"conn-{i:04d}",
+                start_time,
+                end_time,
+                end_time - start_time,
+                random.choice(["TCP", "UDP"]),
+                random.choice(["HTTP", "HTTPConnect", "SOCKS5", "Tun"]),
+                "192.168.1.100",
+                str(random.randint(40000, 60000)),
+                f"203.{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}",
+                "443",
+                host,
+                chain,
+                rule,
+                host,
+                upload,
+                download,
+                process,
+                f"C:/Program Files/{process}",
+                start_time,
+                end_time,
+            ),
+        )
+
     conn.commit()
     conn.close()
     print(f"Test database created: {DB_PATH}")
+
 
 if __name__ == "__main__":
     create_test_database()

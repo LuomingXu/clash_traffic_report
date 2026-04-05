@@ -5,6 +5,8 @@ description = "Clash connection log report generator"
 requires-python = ">=3.10"
 dependencies = [
     "jinja2>=3.1.0",
+    "pyinstrument>=5.1.2",
+    "viztracer>=1.1.1",
 ]
 
 [tool.hatch.build.targets.wheel]

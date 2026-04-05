@@ -1,9 +1,11 @@
 import json
 import os
+import re
 import sqlite3
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 
 from jinja2 import Template
@@ -11,6 +13,25 @@ from pyinstrument import Profiler
 
 DB_PATH = Path(__file__).parent.parent / "clash_log" / "connections.db"
 OUTPUT_PATH = Path(__file__).parent / "index.html"
+
+_executor = None
+
+
+def get_executor(num_workers=None):
+    global _executor
+    if _executor is None:
+        _executor = ProcessPoolExecutor(
+            max_workers=num_workers or (os.cpu_count() or 4)
+        )
+    return _executor
+
+
+def shutdown_executor():
+    global _executor
+    if _executor is not None:
+        _executor.shutdown(wait=True)
+        _executor = None
+
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -445,81 +466,89 @@ def get_time_range_condition(time_range: str) -> tuple:
     return "AND start_time >= ?", [int(start_time.timestamp())]
 
 
-def parse_chains(chains_json: str) -> tuple:
-    try:
-        chains = json.loads(chains_json)
-        if isinstance(chains, list) and len(chains) > 0:
-            node_name = chains[0]
-            is_direct_flag = node_name.upper() == "DIRECT"
-            return node_name, is_direct_flag
-        return "DIRECT", True
-    except (json.JSONDecodeError, TypeError):
-        return "DIRECT", True
+def parse_chains_in_chunk(chunk):
+    result = []
+    for row in chunk:
+        start_time, host, chains_json, upload, download, process_name = row
+        try:
+            chains = json.loads(chains_json)
+            if isinstance(chains, list) and len(chains) > 0:
+                node_name = chains[0]
+                is_direct = node_name.upper() == "DIRECT"
+            else:
+                node_name, is_direct = "DIRECT", True
+        except (json.JSONDecodeError, TypeError):
+            node_name, is_direct = "DIRECT", True
+        result.append(
+            (start_time, host, node_name, is_direct, upload, download, process_name)
+        )
+    return result
 
 
+IPV4_PATTERN = re.compile(r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$")
+
+
+@lru_cache(maxsize=4096)
 def extract_domain(host: str) -> str:
     if not host:
         return "Unknown"
 
-    parts = host.split(".")
-
-    if len(parts) == 4:
-        is_ip = True
-        for part in parts:
-            if not part.isdigit():
-                is_ip = False
-                break
-            num = int(part)
-            if num < 0 or num > 255:
-                is_ip = False
-                break
-
-        if is_ip:
-            return host
-
     if ":" in host:
         return host
 
+    if IPV4_PATTERN.match(host):
+        return host
+
+    parts = host.split(".")
     if len(parts) >= 2:
         return ".".join(parts[-2:])
     return host
 
 
 def process_chunk(chunk):
-    domain_data = defaultdict(lambda: {
-        "upload": 0, "download": 0,
-        "direct_upload": 0, "direct_download": 0,
-        "proxy_upload": 0, "proxy_download": 0
-    })
-    
+    domain_data = defaultdict(
+        lambda: {
+            "upload": 0,
+            "download": 0,
+            "direct_upload": 0,
+            "direct_download": 0,
+            "proxy_upload": 0,
+            "proxy_download": 0,
+        }
+    )
+
     node_data = defaultdict(lambda: {"count": 0, "traffic": 0})
-    
-    process_data = defaultdict(lambda: {
-        "upload": 0, "download": 0,
-        "direct_upload": 0, "direct_download": 0,
-        "proxy_upload": 0, "proxy_download": 0
-    })
-    
+
+    process_data = defaultdict(
+        lambda: {
+            "upload": 0,
+            "download": 0,
+            "direct_upload": 0,
+            "direct_download": 0,
+            "proxy_upload": 0,
+            "proxy_download": 0,
+        }
+    )
+
     for row in chunk:
-        start_time, host, chains_json, upload, download, process_name = row
+        start_time, host, node_name, is_direct, upload, download, process_name = row
         upload = upload or 0
         download = download or 0
-        
+
         domain = extract_domain(host)
-        node_name, is_direct_flag = parse_chains(chains_json)
         node_name = node_name or "Unknown"
-        
+
         domain_data[domain]["upload"] += upload
         domain_data[domain]["download"] += download
-        
+
         node_data[node_name]["count"] += 1
         node_data[node_name]["traffic"] += upload + download
-        
+
         process = process_name or "Unknown"
         process_data[process]["upload"] += upload
         process_data[process]["download"] += download
-        
-        if is_direct_flag:
+
+        if is_direct:
             domain_data[domain]["direct_upload"] += upload
             domain_data[domain]["direct_download"] += download
             process_data[process]["direct_upload"] += upload
@@ -529,7 +558,7 @@ def process_chunk(chunk):
             domain_data[domain]["proxy_download"] += download
             process_data[process]["proxy_upload"] += upload
             process_data[process]["proxy_download"] += download
-    
+
     return dict(domain_data), dict(node_data), dict(process_data)
 
 
@@ -549,7 +578,23 @@ def fetch_all_data(conn):
         FROM connections
         ORDER BY start_time DESC
     """
-    return conn.execute(query).fetchall()
+    rows = conn.execute(query).fetchall()
+
+    num_workers = min(os.cpu_count() or 4, len(rows))
+    if num_workers < 2:
+        return parse_chains_in_chunk(rows)
+
+    chunk_size = max(1, len(rows) // num_workers)
+    chunks = [rows[i : i + chunk_size] for i in range(0, len(rows), chunk_size)]
+
+    executor = get_executor(num_workers)
+    futures = [executor.submit(parse_chains_in_chunk, chunk) for chunk in chunks]
+
+    result = []
+    for future in as_completed(futures):
+        result.extend(future.result())
+
+    return result
 
 
 def filter_by_time(data, min_timestamp):
@@ -567,20 +612,20 @@ def calculate_overview(data):
             "unique_hosts": 0,
             "unique_processes": 0,
         }
-    
+
     total_upload = 0
     total_download = 0
     unique_hosts = set()
     unique_processes = set()
-    
+
     for row in data:
-        total_upload += row[3] or 0
-        total_download += row[4] or 0
+        total_upload += row[4] or 0
+        total_download += row[5] or 0
         if row[1]:
             unique_hosts.add(row[1])
-        if row[5]:
-            unique_processes.add(row[5])
-    
+        if row[6]:
+            unique_processes.add(row[6])
+
     return {
         "total_connections": len(data),
         "total_upload": format_bytes(total_upload),
@@ -593,45 +638,66 @@ def calculate_overview(data):
 def process_data_single_thread(data, domain_limit=20, process_limit=15):
     if not data:
         return {
-            "domain": {"labels": [], "directDownload": [], "proxyDownload": [], "directUpload": [], "proxyUpload": []},
+            "domain": {
+                "labels": [],
+                "directDownload": [],
+                "proxyDownload": [],
+                "directUpload": [],
+                "proxyUpload": [],
+            },
             "node": {"labels": [], "traffic": [], "colors": []},
-            "process": {"labels": [], "directDownload": [], "proxyDownload": [], "directUpload": [], "proxyUpload": []},
+            "process": {
+                "labels": [],
+                "directDownload": [],
+                "proxyDownload": [],
+                "directUpload": [],
+                "proxyUpload": [],
+            },
         }
-    
-    domain_data = defaultdict(lambda: {
-        "upload": 0, "download": 0,
-        "direct_upload": 0, "direct_download": 0,
-        "proxy_upload": 0, "proxy_download": 0
-    })
-    
+
+    domain_data = defaultdict(
+        lambda: {
+            "upload": 0,
+            "download": 0,
+            "direct_upload": 0,
+            "direct_download": 0,
+            "proxy_upload": 0,
+            "proxy_download": 0,
+        }
+    )
+
     node_data = defaultdict(lambda: {"count": 0, "traffic": 0})
-    
-    process_data = defaultdict(lambda: {
-        "upload": 0, "download": 0,
-        "direct_upload": 0, "direct_download": 0,
-        "proxy_upload": 0, "proxy_download": 0
-    })
-    
+
+    process_data = defaultdict(
+        lambda: {
+            "upload": 0,
+            "download": 0,
+            "direct_upload": 0,
+            "direct_download": 0,
+            "proxy_upload": 0,
+            "proxy_download": 0,
+        }
+    )
+
     for row in data:
-        start_time, host, chains_json, upload, download, process_name = row
+        start_time, host, node_name, is_direct, upload, download, process_name = row
         upload = upload or 0
         download = download or 0
-        
+
         domain = extract_domain(host)
-        node_name, is_direct_flag = parse_chains(chains_json)
         node_name = node_name or "Unknown"
-        
+
         domain_data[domain]["upload"] += upload
         domain_data[domain]["download"] += download
-        
+
         node_data[node_name]["count"] += 1
         node_data[node_name]["traffic"] += upload + download
-        
+
         process = process_name or "Unknown"
         process_data[process]["upload"] += upload
         process_data[process]["download"] += download
-        
-        if is_direct_flag:
+
+        if is_direct:
             domain_data[domain]["direct_upload"] += upload
             domain_data[domain]["direct_download"] += download
             process_data[process]["direct_upload"] += upload
@@ -641,7 +707,7 @@ def process_data_single_thread(data, domain_limit=20, process_limit=15):
             domain_data[domain]["proxy_download"] += download
             process_data[process]["proxy_upload"] += upload
             process_data[process]["proxy_download"] += download
-    
+
     sorted_domains = sorted(
         domain_data.items(),
         key=lambda x: x[1]["upload"] + x[1]["download"],
@@ -659,9 +725,18 @@ def process_data_single_thread(data, domain_limit=20, process_limit=15):
     )[:process_limit]
 
     red_colors = [
-        "#EC7063", "#E74C3C", "#C0392B", "#FF6B6B",
-        "#F38181", "#FCBAD3", "#FFB6B9", "#E57373",
-        "#EF5350", "#F44336", "#D32F2F", "#C62828",
+        "#EC7063",
+        "#E74C3C",
+        "#C0392B",
+        "#FF6B6B",
+        "#F38181",
+        "#FCBAD3",
+        "#FFB6B9",
+        "#E57373",
+        "#EF5350",
+        "#F44336",
+        "#D32F2F",
+        "#C62828",
     ]
 
     node_colors = []
@@ -676,10 +751,18 @@ def process_data_single_thread(data, domain_limit=20, process_limit=15):
     return {
         "domain": {
             "labels": [domain or "Unknown" for domain, data_dict in sorted_domains],
-            "directDownload": [data_dict["direct_download"] for domain, data_dict in sorted_domains],
-            "proxyDownload": [data_dict["proxy_download"] for domain, data_dict in sorted_domains],
-            "directUpload": [data_dict["direct_upload"] for domain, data_dict in sorted_domains],
-            "proxyUpload": [data_dict["proxy_upload"] for domain, data_dict in sorted_domains],
+            "directDownload": [
+                data_dict["direct_download"] for domain, data_dict in sorted_domains
+            ],
+            "proxyDownload": [
+                data_dict["proxy_download"] for domain, data_dict in sorted_domains
+            ],
+            "directUpload": [
+                data_dict["direct_upload"] for domain, data_dict in sorted_domains
+            ],
+            "proxyUpload": [
+                data_dict["proxy_upload"] for domain, data_dict in sorted_domains
+            ],
         },
         "node": {
             "labels": [name for name, data_dict in sorted_nodes],
@@ -688,13 +771,23 @@ def process_data_single_thread(data, domain_limit=20, process_limit=15):
         },
         "process": {
             "labels": [
-                process[:20] + "..." if len(process or "") > 20 else (process or "Unknown")
+                process[:20] + "..."
+                if len(process or "") > 20
+                else (process or "Unknown")
                 for process, data_dict in sorted_processes
             ],
-            "directDownload": [data_dict["direct_download"] for process, data_dict in sorted_processes],
-            "proxyDownload": [data_dict["proxy_download"] for process, data_dict in sorted_processes],
-            "directUpload": [data_dict["direct_upload"] for process, data_dict in sorted_processes],
-            "proxyUpload": [data_dict["proxy_upload"] for process, data_dict in sorted_processes],
+            "directDownload": [
+                data_dict["direct_download"] for process, data_dict in sorted_processes
+            ],
+            "proxyDownload": [
+                data_dict["proxy_download"] for process, data_dict in sorted_processes
+            ],
+            "directUpload": [
+                data_dict["direct_upload"] for process, data_dict in sorted_processes
+            ],
+            "proxyUpload": [
+                data_dict["proxy_upload"] for process, data_dict in sorted_processes
+            ],
         },
     }
 
@@ -702,58 +795,80 @@ def process_data_single_thread(data, domain_limit=20, process_limit=15):
 def process_data_with_multiprocessing(data, domain_limit=20, process_limit=15):
     if not data:
         return {
-            "domain": {"labels": [], "directDownload": [], "proxyDownload": [], "directUpload": [], "proxyUpload": []},
+            "domain": {
+                "labels": [],
+                "directDownload": [],
+                "proxyDownload": [],
+                "directUpload": [],
+                "proxyUpload": [],
+            },
             "node": {"labels": [], "traffic": [], "colors": []},
-            "process": {"labels": [], "directDownload": [], "proxyDownload": [], "directUpload": [], "proxyUpload": []},
+            "process": {
+                "labels": [],
+                "directDownload": [],
+                "proxyDownload": [],
+                "directUpload": [],
+                "proxyUpload": [],
+            },
         }
-    
+
     num_workers = min(os.cpu_count() or 4, len(data))
     if num_workers < 2:
         chunks = [data]
     else:
         chunk_size = max(1, len(data) // num_workers)
-        chunks = [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)]
-    
-    domain_data = defaultdict(lambda: {
-        "upload": 0, "download": 0,
-        "direct_upload": 0, "direct_download": 0,
-        "proxy_upload": 0, "proxy_download": 0
-    })
-    
+        chunks = [data[i : i + chunk_size] for i in range(0, len(data), chunk_size)]
+
+    domain_data = defaultdict(
+        lambda: {
+            "upload": 0,
+            "download": 0,
+            "direct_upload": 0,
+            "direct_download": 0,
+            "proxy_upload": 0,
+            "proxy_download": 0,
+        }
+    )
+
     node_data = defaultdict(lambda: {"count": 0, "traffic": 0})
-    
-    process_data = defaultdict(lambda: {
-        "upload": 0, "download": 0,
-        "direct_upload": 0, "direct_download": 0,
-        "proxy_upload": 0, "proxy_download": 0
-    })
-    
-    with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        futures = [executor.submit(process_chunk, chunk) for chunk in chunks]
-        
-        for future in as_completed(futures):
-            chunk_domain, chunk_node, chunk_process = future.result()
-            
-            for domain, data_dict in chunk_domain.items():
-                domain_data[domain]["upload"] += data_dict["upload"]
-                domain_data[domain]["download"] += data_dict["download"]
-                domain_data[domain]["direct_upload"] += data_dict["direct_upload"]
-                domain_data[domain]["direct_download"] += data_dict["direct_download"]
-                domain_data[domain]["proxy_upload"] += data_dict["proxy_upload"]
-                domain_data[domain]["proxy_download"] += data_dict["proxy_download"]
-            
-            for node, data_dict in chunk_node.items():
-                node_data[node]["count"] += data_dict["count"]
-                node_data[node]["traffic"] += data_dict["traffic"]
-            
-            for process, data_dict in chunk_process.items():
-                process_data[process]["upload"] += data_dict["upload"]
-                process_data[process]["download"] += data_dict["download"]
-                process_data[process]["direct_upload"] += data_dict["direct_upload"]
-                process_data[process]["direct_download"] += data_dict["direct_download"]
-                process_data[process]["proxy_upload"] += data_dict["proxy_upload"]
-                process_data[process]["proxy_download"] += data_dict["proxy_download"]
-    
+
+    process_data = defaultdict(
+        lambda: {
+            "upload": 0,
+            "download": 0,
+            "direct_upload": 0,
+            "direct_download": 0,
+            "proxy_upload": 0,
+            "proxy_download": 0,
+        }
+    )
+
+    executor = get_executor(num_workers)
+    futures = [executor.submit(process_chunk, chunk) for chunk in chunks]
+
+    for future in as_completed(futures):
+        chunk_domain, chunk_node, chunk_process = future.result()
+
+        for domain, data_dict in chunk_domain.items():
+            domain_data[domain]["upload"] += data_dict["upload"]
+            domain_data[domain]["download"] += data_dict["download"]
+            domain_data[domain]["direct_upload"] += data_dict["direct_upload"]
+            domain_data[domain]["direct_download"] += data_dict["direct_download"]
+            domain_data[domain]["proxy_upload"] += data_dict["proxy_upload"]
+            domain_data[domain]["proxy_download"] += data_dict["proxy_download"]
+
+        for node, data_dict in chunk_node.items():
+            node_data[node]["count"] += data_dict["count"]
+            node_data[node]["traffic"] += data_dict["traffic"]
+
+        for process, data_dict in chunk_process.items():
+            process_data[process]["upload"] += data_dict["upload"]
+            process_data[process]["download"] += data_dict["download"]
+            process_data[process]["direct_upload"] += data_dict["direct_upload"]
+            process_data[process]["direct_download"] += data_dict["direct_download"]
+            process_data[process]["proxy_upload"] += data_dict["proxy_upload"]
+            process_data[process]["proxy_download"] += data_dict["proxy_download"]
+
     sorted_domains = sorted(
         domain_data.items(),
         key=lambda x: x[1]["upload"] + x[1]["download"],
@@ -788,10 +903,18 @@ def process_data_with_multiprocessing(data, domain_limit=20, process_limit=15):
     return {
         "domain": {
             "labels": [domain or "Unknown" for domain, data_dict in sorted_domains],
-            "directDownload": [data_dict["direct_download"] for domain, data_dict in sorted_domains],
-            "proxyDownload": [data_dict["proxy_download"] for domain, data_dict in sorted_domains],
-            "directUpload": [data_dict["direct_upload"] for domain, data_dict in sorted_domains],
-            "proxyUpload": [data_dict["proxy_upload"] for domain, data_dict in sorted_domains],
+            "directDownload": [
+                data_dict["direct_download"] for domain, data_dict in sorted_domains
+            ],
+            "proxyDownload": [
+                data_dict["proxy_download"] for domain, data_dict in sorted_domains
+            ],
+            "directUpload": [
+                data_dict["direct_upload"] for domain, data_dict in sorted_domains
+            ],
+            "proxyUpload": [
+                data_dict["proxy_upload"] for domain, data_dict in sorted_domains
+            ],
         },
         "node": {
             "labels": [name for name, data_dict in sorted_nodes],
@@ -800,13 +923,23 @@ def process_data_with_multiprocessing(data, domain_limit=20, process_limit=15):
         },
         "process": {
             "labels": [
-                process[:20] + "..." if len(process or "") > 20 else (process or "Unknown")
+                process[:20] + "..."
+                if len(process or "") > 20
+                else (process or "Unknown")
                 for process, data_dict in sorted_processes
             ],
-            "directDownload": [data_dict["direct_download"] for process, data_dict in sorted_processes],
-            "proxyDownload": [data_dict["proxy_download"] for process, data_dict in sorted_processes],
-            "directUpload": [data_dict["direct_upload"] for process, data_dict in sorted_processes],
-            "proxyUpload": [data_dict["proxy_upload"] for process, data_dict in sorted_processes],
+            "directDownload": [
+                data_dict["direct_download"] for process, data_dict in sorted_processes
+            ],
+            "proxyDownload": [
+                data_dict["proxy_download"] for process, data_dict in sorted_processes
+            ],
+            "directUpload": [
+                data_dict["direct_upload"] for process, data_dict in sorted_processes
+            ],
+            "proxyUpload": [
+                data_dict["proxy_upload"] for process, data_dict in sorted_processes
+            ],
         },
     }
 
@@ -822,7 +955,7 @@ def generate_report():
         print("Fetching all data from database...")
         all_data = fetch_all_data(conn)
         print(f"Total records: {len(all_data)}")
-        
+
         now = datetime.now()
         time_thresholds = {
             "All": 0,
@@ -831,31 +964,31 @@ def generate_report():
             "24h": int((now - timedelta(hours=24)).timestamp()),
             "8h": int((now - timedelta(hours=8)).timestamp()),
         }
-        
+
         time_ranges = ["8h", "24h", "1D", "1M", "All"]
         overview_data = {}
         chart_data = {}
-        
+
         print("Processing All...")
         filtered_all = all_data
         overview_data["All"] = calculate_overview(filtered_all)
         chart_data["All"] = process_data_with_multiprocessing(filtered_all, 20, 15)
-        
+
         print("Processing 1M...")
         filtered_1m = filter_by_time(all_data, time_thresholds["1M"])
         overview_data["1M"] = calculate_overview(filtered_1m)
         chart_data["1M"] = process_data_with_multiprocessing(filtered_1m, 20, 15)
-        
+
         print("Processing 1D...")
         filtered_1d = filter_by_time(filtered_1m, time_thresholds["1D"])
         overview_data["1D"] = calculate_overview(filtered_1d)
         chart_data["1D"] = process_data_single_thread(filtered_1d, 20, 15)
-        
+
         print("Processing 24h...")
         filtered_24h = filter_by_time(filtered_1d, time_thresholds["24h"])
         overview_data["24h"] = calculate_overview(filtered_24h)
         chart_data["24h"] = process_data_single_thread(filtered_24h, 20, 15)
-        
+
         print("Processing 8h...")
         filtered_8h = filter_by_time(filtered_24h, time_thresholds["8h"])
         overview_data["8h"] = calculate_overview(filtered_8h)
@@ -872,6 +1005,7 @@ def generate_report():
         print(f"Report generated: {OUTPUT_PATH}")
     finally:
         conn.close()
+        shutdown_executor()
 
 
 if __name__ == "__main__":

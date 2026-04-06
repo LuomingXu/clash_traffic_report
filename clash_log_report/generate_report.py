@@ -281,6 +281,16 @@ HTML_TEMPLATE = """
             return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         }
 
+        function formatGB(bytes) {
+            if (bytes === 0) return '0';
+            const gb = bytes / (1024 * 1024 * 1024);
+            if (gb >= 1) {
+                return gb.toFixed(1) + 'G';
+            } else {
+                return (gb * 1000).toFixed(0) + 'M';
+            }
+        }
+
         const chartData = {{ chart_data | safe }};
 
         Object.keys(chartData).forEach(timeRange => {
@@ -400,15 +410,16 @@ HTML_TEMPLATE = """
                     },
                     scales: {
                         x: {
+                            stacked: true
+                        },
+                        y: {
                             stacked: true,
                             ticks: {
                                 callback: function(value) {
-                                    return formatBytes(value);
-                                }
+                                    return formatGB(value);
+                                },
+                                stepSize: 536870912
                             }
-                        },
-                        y: {
-                            stacked: true
                         }
                     }
                 }

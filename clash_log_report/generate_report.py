@@ -565,18 +565,17 @@ def process_chunk(chunk):
 def fetch_all_data(conn):
     query = """
         SELECT 
-            start_time,
-            CASE 
-                WHEN host IS NOT NULL AND host != '' THEN host
-                WHEN destination_ip IS NOT NULL AND destination_ip != '' THEN destination_ip
-                ELSE NULL
-            END as host,
-            chains,
-            upload,
-            download,
-            process_name
-        FROM connections
-        ORDER BY start_time DESC
+            c.start_time,
+            COALESCE(h.host, c.destination_ip) as host,
+            ch.chains,
+            c.upload,
+            c.download,
+            p.process_name
+        FROM connections c
+        LEFT JOIN hosts h ON c.host_id = h.id
+        LEFT JOIN chains ch ON c.chains_id = ch.id
+        LEFT JOIN processes p ON c.process_id = p.id
+        ORDER BY c.start_time DESC
     """
     rows = conn.execute(query).fetchall()
 

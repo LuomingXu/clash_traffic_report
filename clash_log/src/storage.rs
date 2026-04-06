@@ -26,39 +26,42 @@ impl Database {
             
             CREATE INDEX IF NOT EXISTS idx_processes_name ON processes(process_name);
             
+            CREATE TABLE IF NOT EXISTS source_ips (
+                id INTEGER PRIMARY KEY,
+                ip TEXT NOT NULL UNIQUE
+            );
+            
+            CREATE TABLE IF NOT EXISTS hosts (
+                id INTEGER PRIMARY KEY,
+                host TEXT NOT NULL UNIQUE
+            );
+            
+            CREATE TABLE IF NOT EXISTS chains (
+                id INTEGER PRIMARY KEY,
+                chains TEXT NOT NULL UNIQUE
+            );
+            
             CREATE TABLE IF NOT EXISTS connections (
                 id TEXT PRIMARY KEY,
                 start_time INTEGER NOT NULL,
-                
                 network TEXT NOT NULL,
                 connection_type TEXT NOT NULL,
-                
-                source_ip TEXT NOT NULL,
-                source_port TEXT NOT NULL,
-                
+                source_ip_id INTEGER REFERENCES source_ips(id),
                 destination_ip TEXT NOT NULL,
-                destination_port TEXT NOT NULL,
-                host TEXT,
-                
-                chains TEXT NOT NULL,
-                inbound_name TEXT,
-                
+                host_id INTEGER REFERENCES hosts(id),
+                chains_id INTEGER NOT NULL REFERENCES chains(id),
                 rule TEXT,
                 rule_payload TEXT,
-                
                 upload INTEGER NOT NULL DEFAULT 0,
                 download INTEGER NOT NULL DEFAULT 0,
-                
-                process_name TEXT,
-                process_id INTEGER
+                process_id INTEGER REFERENCES processes(id)
             );
             
             CREATE INDEX IF NOT EXISTS idx_connections_start_time ON connections(start_time);
-            CREATE INDEX IF NOT EXISTS idx_connections_host ON connections(host);
-            CREATE INDEX IF NOT EXISTS idx_connections_process_name ON connections(process_name);
-            CREATE INDEX IF NOT EXISTS idx_connections_process_id ON connections(process_id);
-            CREATE INDEX IF NOT EXISTS idx_connections_source_ip ON connections(source_ip);
             CREATE INDEX IF NOT EXISTS idx_connections_destination_ip ON connections(destination_ip);
+            CREATE INDEX IF NOT EXISTS idx_connections_host_id ON connections(host_id);
+            CREATE INDEX IF NOT EXISTS idx_connections_chains_id ON connections(chains_id);
+            CREATE INDEX IF NOT EXISTS idx_connections_process_id ON connections(process_id);
             
             CREATE TABLE IF NOT EXISTS process_statistics (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,32 +125,43 @@ impl Database {
                 None
             };
             
+            let source_ip_id = get_or_create_source_ip(&db, &conn_data.metadata.source_ip)?;
+            
+            let host_id = if let Some(host) = &conn_data.metadata.host {
+                if !host.is_empty() {
+                    Some(get_or_create_host(&db, host)?)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            
+            let chains_json = serde_json::to_string(&conn_data.chains).unwrap_or_default();
+            let chains_id = get_or_create_chains(&db, &chains_json)?;
+            
             db.execute(
                 "INSERT OR REPLACE INTO connections (
                     id, start_time,
                     network, connection_type,
-                    source_ip, source_port, destination_ip, destination_port,
-                    host, chains, inbound_name,
+                    source_ip_id, destination_ip,
+                    host_id, chains_id,
                     rule, rule_payload, upload, download,
-                    process_name, process_id
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                    process_id
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 rusqlite::params![
                     conn_data.id,
                     start_time,
                     format!("{:?}", conn_data.metadata.network),
                     format!("{:?}", conn_data.metadata.connection_type),
-                    conn_data.metadata.source_ip,
-                    conn_data.metadata.source_port,
+                    source_ip_id,
                     conn_data.metadata.destination_ip,
-                    conn_data.metadata.destination_port,
-                    conn_data.metadata.host,
-                    serde_json::to_string(&conn_data.chains).unwrap_or_default(),
-                    if conn_data.metadata.inbound_name.is_empty() { None } else { Some(&conn_data.metadata.inbound_name) },
+                    host_id,
+                    chains_id,
                     if conn_data.rule.is_empty() { None } else { Some(&conn_data.rule) },
                     if conn_data.rule_payload.is_empty() { None } else { Some(&conn_data.rule_payload) },
                     conn_data.upload as i64,
                     conn_data.download as i64,
-                    conn_data.metadata.process,
                     process_id,
                 ],
             )?;
@@ -165,18 +179,21 @@ impl Database {
         tokio::task::spawn_blocking(move || {
             let db = db.lock().unwrap();
             
+            let chains_json = serde_json::to_string(&conn_data.chains).unwrap_or_default();
+            let chains_id = get_or_create_chains(&db, &chains_json)?;
+            
             db.execute(
                 "UPDATE connections SET 
                     upload = ?1, 
                     download = ?2, 
-                    chains = ?3,
+                    chains_id = ?3,
                     rule = ?4,
                     rule_payload = ?5
                 WHERE id = ?6",
                 rusqlite::params![
                     conn_data.upload as i64,
                     conn_data.download as i64,
-                    serde_json::to_string(&conn_data.chains).unwrap_or_default(),
+                    chains_id,
                     if conn_data.rule.is_empty() { None } else { Some(&conn_data.rule) },
                     if conn_data.rule_payload.is_empty() { None } else { Some(&conn_data.rule_payload) },
                     conn_data.id,
@@ -274,6 +291,63 @@ fn get_or_create_process(
     db.execute(
         "INSERT INTO processes (process_name, process_path) VALUES (?1, ?2)",
         rusqlite::params![process_name, process_path],
+    )?;
+    
+    Ok(db.last_insert_rowid())
+}
+
+fn get_or_create_source_ip(
+    db: &SqliteConnection,
+    ip: &str,
+) -> rusqlite::Result<i64> {
+    let mut stmt = db.prepare("SELECT id FROM source_ips WHERE ip = ?1")?;
+    let mut rows = stmt.query(rusqlite::params![ip])?;
+    
+    if let Some(row) = rows.next()? {
+        return Ok(row.get(0)?);
+    }
+    
+    db.execute(
+        "INSERT INTO source_ips (ip) VALUES (?1)",
+        rusqlite::params![ip],
+    )?;
+    
+    Ok(db.last_insert_rowid())
+}
+
+fn get_or_create_host(
+    db: &SqliteConnection,
+    host: &str,
+) -> rusqlite::Result<i64> {
+    let mut stmt = db.prepare("SELECT id FROM hosts WHERE host = ?1")?;
+    let mut rows = stmt.query(rusqlite::params![host])?;
+    
+    if let Some(row) = rows.next()? {
+        return Ok(row.get(0)?);
+    }
+    
+    db.execute(
+        "INSERT INTO hosts (host) VALUES (?1)",
+        rusqlite::params![host],
+    )?;
+    
+    Ok(db.last_insert_rowid())
+}
+
+fn get_or_create_chains(
+    db: &SqliteConnection,
+    chains: &str,
+) -> rusqlite::Result<i64> {
+    let mut stmt = db.prepare("SELECT id FROM chains WHERE chains = ?1")?;
+    let mut rows = stmt.query(rusqlite::params![chains])?;
+    
+    if let Some(row) = rows.next()? {
+        return Ok(row.get(0)?);
+    }
+    
+    db.execute(
+        "INSERT INTO chains (chains) VALUES (?1)",
+        rusqlite::params![chains],
     )?;
     
     Ok(db.last_insert_rowid())
